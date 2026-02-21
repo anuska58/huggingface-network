@@ -21,9 +21,9 @@ base_url = "https://huggingface.co/api/models"
 csv_file = "model_metadata.csv"
 progress_file = "progress.json"
 image_dir = "images"
-max_workers = 10
+max_workers = 2
 requests_timeout = 15
-batch_size = 1000
+batch_size = 5
 
 os.makedirs(image_dir, exist_ok=True)
 
@@ -38,11 +38,18 @@ os.makedirs(image_dir, exist_ok=True)
 
 def load_progress():
     """Loads the last progress from the progress file, returning the last created_at timestamp if available."""
-    if os.path.exists(progress_file):
+    if not os.path.exists(progress_file):
+        return None
+    
+    try:
         with open(progress_file, "r", encoding="utf-8") as file:
-            data = json.load(file)
+            content = file.read().strip()
+            if not content:
+                return None
+            data = json.loads(content)
             return data.get("last_created_at")
-    return None
+    except (json.JSONDecodeError, OSError):
+        return None
 
 def save_progress(timestamp):
     """Saves the last created_at timestamp to the progress file."""
@@ -56,29 +63,33 @@ def create_session():
     session.mount("http://", adapter)
     return session
 
-def fetch_new_models(session, last_created_at):
+def fetch_new_models(session, last_created_at, offset):
     """Fetches new models from the Hugging Face API created after the last_created_at timestamp."""
     params = {
-        "sort": "created_at",
-        "direction": -1,
-        "limit": batch_size
+        "sort": "createdAt",
+        "direction": 1,
+        "limit": batch_size,
+        "offset": offset,
     }
 
     response = session.get(base_url, params=params, timeout=requests_timeout)
     response.raise_for_status()
     models = response.json()
 
-    new_models = []
+    if not models:
+        return []
+
+    filtered_models = []
 
     for model in models:
-        created_at = model.get("created_at")
+        created_at = model.get("createdAt")
         if not created_at:
             continue
         if last_created_at and created_at <= last_created_at:
             break
-        new_models.append(model)
+        filtered_models.append(model)
 
-    return new_models
+    return filtered_models
 
 def download_images(session, model_card, creator, model_name):
     """Downloads images from the model card, saving them to the appropriate directory 
@@ -129,10 +140,10 @@ def process_model(session, model):
         model_name = model_id.split("/")[1]
         url = f"https://huggingface.co/{model_id}"
         task = model.get("pipeline_tag")
-        created_at = model.get("created_at")
+        created_at = model.get("createdAt")
 
         if not task:
-            return None
+            task = "Unknown"
 
         try:
             readme_path = hf_hub_download(
@@ -162,56 +173,60 @@ def process_model(session, model):
             "created_at": created_at,
         }
     except Exception as error:
-        logging.error("Model processing failed: %s", error)
-        return None
+        print("ERROR PROCESSING MODEL:", model.get("modelId"))
+        print(error)
+        raise
 
 
 def main():
     """Main function to orchestrate the scraping process, including fetching new models, processing them, and saving results."""
     session= create_session()
-    last_created_at = load_progress()
+    last_created_at = None
+    offset = 0
 
-    models =  fetch_new_models(session, last_created_at)
+    while True:
+        models =  fetch_new_models(session, last_created_at, offset)
 
-    if not models:
-        print("No new models found.")
-        return
-    
-    print(f"Found {len(models)} new models. Processing...")
-    results = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-
-        futures = [
-            executor.submit(process_model, session, model) 
-            for model in models
-        ]
-        for future in tqdm(as_completed(futures), total=len(futures)):
-            result = future.result()
-            if result:
-                results.append(result)
+        if not models:
+            print("No new models found.")
+            break
         
-        if not results:
-            print("No valid models processed.")
-            return
+        print(f"Found {len(models)} models (offset {offset}). Processing...")
+        results = []
 
-        df = pd.DataFrame(results)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
 
-        if not os.path.exists(csv_file):
-            df.to_csv(csv_file, index=False, encoding="utf-8")
-        else:
-            df.to_csv(
-                csv_file, 
-                mode="a", 
-                header=False, 
-                index=False, 
-                encoding="utf-8"
-            )
-        
-        new_timestamp= results[0]["created_at"]
-        save_progress(new_timestamp)
+            futures = [
+                executor.submit(process_model, session, model) 
+                for model in models
+            ]
+            for future in tqdm(as_completed(futures), total=len(futures)):
+                result = future.result()
+                if result:
+                    results.append(result)
+            
+            if not results:
+                print("No valid models processed.")
+                break
 
-        print(f"Processed {len(results)} models. Progress saved. Batch completed.")
+            df = pd.DataFrame(results)
+
+            if not os.path.exists(csv_file):
+                df.to_csv(csv_file, index=False, encoding="utf-8")
+            else:
+                df.to_csv(
+                    csv_file, 
+                    mode="a", 
+                    header=False, 
+                    index=False, 
+                    encoding="utf-8"
+                )
+            
+            new_timestamp= max(result["created_at"] for result in results)
+            save_progress(new_timestamp)
+
+            print(f"Processed {len(results)} models. Progress saved. Batch completed.")
+            offset += batch_size
 
 if __name__ == "__main__":
     main()
