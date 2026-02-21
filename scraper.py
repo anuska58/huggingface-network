@@ -164,3 +164,54 @@ def process_model(session, model):
     except Exception as error:
         logging.error("Model processing failed: %s", error)
         return None
+
+
+def main():
+
+    session= create_session()
+    last_created_at = load_progress()
+
+    models =  fetch_new_models(session, last_created_at)
+
+    if not models:
+        print("No new models found.")
+        return
+    
+    print(f"Found {len(models)} new models. Processing...")
+    results = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+        futures = [
+            executor.submit(process_model, session, model) 
+            for model in models
+        ]
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            result = future.result()
+            if result:
+                results.append(result)
+        
+        if not results:
+            print("No valid models processed.")
+            return
+
+        df = pd.DataFrame(results)
+
+        if not os.path.exists(csv_file):
+            df.to_csv(csv_file, index=False, encoding="utf-8")
+        else:
+            df.to_csv(
+                csv_file, 
+                mode="a", 
+                header=False, 
+                index=False, 
+                encoding="utf-8"
+            )
+        
+        new_timestamp= results[0]["created_at"]
+        save_progress(new_timestamp)
+
+        print(f"Processed {len(results)} models. Progress saved. Batch completed.")
+
+if __name__ == "__main__":
+    main()
