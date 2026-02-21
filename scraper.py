@@ -79,4 +79,88 @@ def fetch_new_models(session, last_created_at):
         new_models.append(model)
 
     return new_models
+
+def download_images(session, model_card, creator, model_name):
+    """Downloads images from the model card, saving them to the appropriate directory 
+    and returning the count of successfully downloaded images."""
+    image_urls = re.findall(r'!\[.*?\]\((https?://.*?)\)', model_card)
+
+    creator_folder = os.path.join(image_dir, creator)
+    os.makedirs(creator_folder, exist_ok=True)
+
+    image_count = 0
+
+    for index, image_url in enumerate(image_urls):
+        try:
+            if not image_url.startswith("http"):
+                continue
+            
+            allowed_extensions = {"png", "jpg", "jpeg", "gif", "webp"}
+
+            extension = image_url.split("?")[0].split(".")[-1].lower()
+
+            if extension not in allowed_extensions:
+                extension = "jpg"
+            
+            filename = f"{model_name}_{index + 1}.{extension}"
+            filepath = os.path.join(creator_folder, filename)
+
+            if os.path.exists(filepath):
+                image_count += 1
+                continue
+            
+            response = session.get(image_url, timeout=requests_timeout)
+
+            if response.status_code == 200:
+                with open(filepath, "wb") as file:
+                    file.write(response.content)
+                image_count += 1
+
+        except Exception as error:
+            logging.warning("Image download failed: %s", error)
+
+    return image_count   
+
+def process_model(session, model):
+
+    try:
+        model_id = model["modelId"]
+        creator = model_id.split("/")[0]
+        model_name = model_id.split("/")[1]
+        url = f"https://huggingface.co/{model_id}"
+        task = model.get("pipeline_tag")
+        created_at = model.get("created_at")
+
+        if not task:
+            return None
+
+        try:
+            readme_path = hf_hub_download(
+                repo_id=model_id, 
+                filename="README.md",
+                )  
+            with open(readme_path, "r", encoding="utf-8") as file:
+                model_card = file.read()
         
+        except Exception:
+            model_card = ""
+
+        image_count = download_images(
+            session, 
+            model_card, 
+            creator, 
+            model_name,
+        )
+
+        return {
+            "task": task,
+            "creator": creator,
+            "model_name": model_name,
+            "url": url,
+            "model_card": model_card,
+            "image_count": image_count,
+            "created_at": created_at,
+        }
+    except Exception as error:
+        logging.error("Model processing failed: %s", error)
+        return None
