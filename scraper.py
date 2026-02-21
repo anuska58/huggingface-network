@@ -167,7 +167,7 @@ def process_model(session, model):
 
 
 def main():
-
+    """Main function to orchestrate the scraping process, including fetching new models, processing them, and saving results."""
     session= create_session()
     last_created_at = load_progress()
 
