@@ -1,1 +1,13 @@
+# Ignore the virtual environment
 venv/
+
+# Ignore your secret token!
+.env
+
+# Ignore downloaded images and huge CSV files
+images/
+huggingface_models.csv
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
