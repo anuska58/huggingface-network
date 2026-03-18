@@ -7,6 +7,12 @@ venv/
 # Ignore downloaded images and huge CSV files
 images/
 huggingface_models.csv
+edges.csv
+merged_dataset.csv
+nodes.csv
+all_text_generation_models.csv
+images.zip
+processed_models.txt
 
 # Ignore Python cache files
 __pycache__/
