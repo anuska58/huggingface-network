@@ -13,6 +13,9 @@ nodes.csv
 all_text_generation_models.csv
 images.zip
 processed_models.txt
+edges_sample_1k.csv
+nodes_enriched.csv
+nodes_sample_1k.csv
 
 # Ignore Python cache files
 __pycache__/
