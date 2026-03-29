@@ -1,0 +1,43 @@
+
+RQ1 SUMMARY STATISTICS
+=======================
+Total nodes in graph:          194,377
+Total base models (in-deg=0):  8,474  (4.4% of graph)
+Total derivative models:       164,207
+
+Top 10 base models by derivative count:
+                                  model_id  out_degree  downloads
+241            Qwen/Qwen3-4B-Instruct-2507        6445    3795726
+50     meta-llama/Meta-Llama-3-8B-Instruct        2028    1395075
+85                   openai-community/gpt2        1713   10803658
+213              mistralai/Mistral-7B-v0.1        1499     539927
+48                 meta-llama/Llama-3.1-8B        1434    1264103
+209                  distilbert/distilgpt2        1358    2336651
+220       meta-llama/Llama-3.2-1B-Instruct        1059    4100330
+41        meta-llama/Llama-3.2-3B-Instruct        1054    4414441
+38049   mistralai/Mistral-7B-Instruct-v0.2         889    2874969
+784             HuggingFaceTB/SmolLM2-135M         826     817672
+
+Structural comparison (base vs derivative):
+               count  avg_downloads  med_downloads  avg_out_degree  avg_in_degree
+lineage_role                                                                     
+intermediate   12504       12279.90            4.0            6.59           1.80
+isolated      168389         109.45            0.0            0.00           0.00
+leaf          151703         493.55            1.0            0.00           1.12
+root            8474       19527.79            9.0            8.12           0.00
+
+Base models by family:
+              count  total_deriv         avg_dl
+model_family                                   
+Other          4228        18828    8130.298959
+LLaMA          1738        17125   16900.123705
+Qwen            684        16028   60058.786550
+GPT             355         5099   92845.439437
+Mistral         741         4597    5193.485830
+Gemma           394         3217    2665.637056
+Phi             179         2143   38237.067039
+DeepSeek         58          991   93848.344828
+Falcon           45          381   10904.177778
+OPT              15          253  507494.733333
+BLOOM            27          127   60877.074074
+T5               10           18   75774.200000

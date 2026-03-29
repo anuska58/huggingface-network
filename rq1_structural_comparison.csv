@@ -1,0 +1,5 @@
+lineage_role,count,avg_downloads,med_downloads,avg_out_degree,avg_in_degree
+intermediate,12504,12279.9,4.0,6.59,1.8
+isolated,168389,109.45,0.0,0.0,0.0
+leaf,151703,493.55,1.0,0.0,1.12
+root,8474,19527.79,9.0,8.12,0.0
