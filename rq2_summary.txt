@@ -1,0 +1,42 @@
+
+RQ2 SUMMARY STATISTICS
+=======================
+Total nodes in graph:              194,377
+Multi-parent nodes (in-deg >= 2):  12,944 (6.66%)
+Multi-parent nodes (in-deg >= 3):  5,369
+Multi-parent nodes (in-deg >= 5):  1,862
+Multi-parent nodes (in-deg >= 10): 302
+Maximum in-degree:                 100
+
+Cross-family merges: 4,405 (34.0% of multi-parent nodes)
+Same-family merges:  8,539
+
+Downloads comparison:
+  Multi-parent  avg: 37   median: 2
+  Single-parent avg: 1507   median: 1
+
+Top 10 most-merged base model pairs:
+                           parent_a                                parent_b  co_occurrence_count family_a family_b
+   meta-llama/Llama-3.1-8B-Instruct   meta-llama/Meta-Llama-3.1-8B-Instruct                  280    LLaMA    LLaMA
+ mistralai/Mistral-7B-Instruct-v0.2               mistralai/Mistral-7B-v0.1                  249  Mistral  Mistral
+  Nondzu/Mistral-7B-codealpaca-lora                   TIGER-Lab/MAmmoTH2-7B                  224  Mistral    Other
+  Nondzu/Mistral-7B-codealpaca-lora      mistralai/Mistral-7B-Instruct-v0.2                  224  Mistral  Mistral
+              TIGER-Lab/MAmmoTH2-7B      mistralai/Mistral-7B-Instruct-v0.2                  224    Other  Mistral
+  Nondzu/Mistral-7B-codealpaca-lora               mistralai/Mistral-7B-v0.1                  223  Mistral  Mistral
+              TIGER-Lab/MAmmoTH2-7B               mistralai/Mistral-7B-v0.1                  223    Other  Mistral
+ OpenPipe/mistral-ft-optimized-1218    mlabonne/NeuralHermes-2.5-Mistral-7B                  109  Mistral  Mistral
+EVA-UNIT-01/EVA-LLaMA-3.33-70B-v0.1 SicariusSicariiStuff/Negative_LLAMA_70B                   90    LLaMA    LLaMA
+EVA-UNIT-01/EVA-LLaMA-3.33-70B-v0.1               Sao10K/L3.1-70B-Hanami-x1                   87    LLaMA    Other
+
+Top family combinations:
+family_a family_b  count
+   LLaMA    Other   1588
+ Mistral    Other   1413
+   Other     Qwen    912
+   Gemma    Other    184
+   Other      Phi    148
+     GPT    Other     77
+   LLaMA  Mistral     53
+DeepSeek    Other     35
+   LLaMA      Phi     27
+ Mistral      Phi     25
