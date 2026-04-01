@@ -1,189 +1,357 @@
 """
-RQ2 - Multi-Parent Reuse and Knowledge Diversity
-=================================================
-How prevalent is multi-parent derivation in the HuggingFace ecosystem,
-and which combinations of base models are most frequently reused together?
+RQ2 Diagnostic Script for Family Classification
+====================================
+Goal:
+  - Determine whether the family-classification problem comes from the data or from our classifier.
+  - Use actual CSV schema:
+      edges.csv: Source, Target, Type, Transformation, Confidence, ExtractionSource
+      nodes.csv: Id, tasks, creator, model_name, tags, downloads, created_at
+  - Compare multiple family-identification methods.
 
 Outputs:
-  - rq2_multi_parent_nodes.csv   : all nodes with in-degree >= 2
-  - rq2_parent_pairs.csv         : most common base model co-occurrence pairs
-  - rq2_family_combinations.csv  : which model families get combined most
-  - rq2_summary.txt              : key statistics for the paper
+  - rq2_family_method_comparison.csv
+  - rq2_resolution_by_method.csv
+  - rq2_unresolved_nodes.csv
+  - rq2_unresolved_multi_parent_examples.csv
+  - rq2_best_effort_family_pairs.csv
+  - rq2_diagnostic_summary.txt
 """
 
 import pandas as pd
 import networkx as nx
+import re
 from itertools import combinations
 from collections import Counter
 
 EDGES_FILE = "edges.csv"
-NODES_FILE = "all_text_generation_models.csv"
+NODES_FILE = "nodes.csv"
 
 print("Loading data...")
 edges = pd.read_csv(EDGES_FILE)
 nodes = pd.read_csv(NODES_FILE)
 
-# Handle both Id (all_text_generation_models.csv) and model_id (merged_dataset.csv)
+# Normalize column names
 if "Id" in nodes.columns and "model_id" not in nodes.columns:
     nodes = nodes.rename(columns={"Id": "model_id"})
 
+# Make sure needed fields exist
+for col in ["creator", "model_name", "tags", "downloads", "created_at"]:
+    if col not in nodes.columns:
+        nodes[col] = "" if col in ["creator", "model_name", "tags", "created_at"] else 0
+
+nodes["downloads"] = pd.to_numeric(nodes["downloads"], errors="coerce").fillna(0)
+
+print(f"Nodes: {len(nodes):,}")
+print(f"Edges: {len(edges):,}")
+
+# Build graph
 G = nx.from_pandas_edgelist(
-    edges, source="Source", target="Target",
-    edge_attr=["Transformation", "Confidence"],
+    edges,
+    source="Source",
+    target="Target",
+    edge_attr=["Type", "Transformation", "Confidence", "ExtractionSource"],
     create_using=nx.DiGraph()
 )
 
-in_deg  = dict(G.in_degree())
+in_deg = dict(G.in_degree())
 out_deg = dict(G.out_degree())
-nodes["downloads"] = pd.to_numeric(nodes["downloads"], errors="coerce").fillna(0)
 
-# ── Model family helper ───────────────────────────────────────────────────────
-def extract_family(model_id):
-    mid = str(model_id).lower()
-    if "llama"    in mid: return "LLaMA"
-    if "qwen"     in mid: return "Qwen"
-    if "mistral"  in mid: return "Mistral"
-    if "gpt"      in mid: return "GPT"
-    if "deepseek" in mid: return "DeepSeek"
-    if "gemma"    in mid: return "Gemma"
-    if "falcon"   in mid: return "Falcon"
-    if "bloom"    in mid: return "BLOOM"
-    if "phi"      in mid: return "Phi"
-    if "opt"      in mid: return "OPT"
-    return "Other"
+multi_ids = [n for n, d in in_deg.items() if d >= 2]
+multi_nodes = nodes[nodes["model_id"].isin(multi_ids)].copy()
 
-# ── Find all multi-parent nodes ───────────────────────────────────────────────
-print("\n=== MULTI-PARENT PREVALENCE ===")
-total_nodes   = G.number_of_nodes()
-single_parent = sum(1 for d in in_deg.values() if d == 1)
-multi_2plus   = sum(1 for d in in_deg.values() if d >= 2)
-multi_3plus   = sum(1 for d in in_deg.values() if d >= 3)
-multi_5plus   = sum(1 for d in in_deg.values() if d >= 5)
-multi_10plus  = sum(1 for d in in_deg.values() if d >= 10)
-max_in        = max(in_deg.values())
+print(f"Multi-parent nodes: {len(multi_nodes):,}")
 
-print(f"Total nodes:             {total_nodes:,}")
-print(f"Single-parent (deg=1):   {single_parent:,} ({single_parent/total_nodes*100:.1f}%)")
-print(f"Multi-parent (deg>=2):   {multi_2plus:,} ({multi_2plus/total_nodes*100:.1f}%)")
-print(f"Multi-parent (deg>=3):   {multi_3plus:,} ({multi_3plus/total_nodes*100:.1f}%)")
-print(f"Multi-parent (deg>=5):   {multi_5plus:,} ({multi_5plus/total_nodes*100:.1f}%)")
-print(f"Multi-parent (deg>=10):  {multi_10plus:,} ({multi_10plus/total_nodes*100:.1f}%)")
-print(f"Max in-degree:           {max_in}")
+# -------------------------------------------------------------------
+# Family patterns
+# Keep this list fairly conservative and paper-friendly.
+# -------------------------------------------------------------------
+FAMILY_PATTERNS = [
+    ("LLaMA",   [r"llama", r"meta-llama"]),
+    ("Qwen",    [r"\bqwen\b"]),
+    ("Mistral", [r"mistral"]),
+    ("GPT",     [r"\bgpt\b", r"openai"]),
+    ("DeepSeek",[r"deepseek"]),
+    ("Gemma",   [r"gemma"]),
+    ("Falcon",  [r"falcon"]),
+    ("BLOOM",   [r"bloom"]),
+    ("Phi",     [r"\bphi\b"]),
+    ("OPT",     [r"\bopt\b"]),
+    ("T5",      [r"\bt5\b"]),
+    ("Yi",      [r"\byi\b"]),
+    ("Nemotron",[r"nemotron"]),
+]
 
-# Pre-build lookup dicts ONCE — avoids 12k x 341k row scans in the loop
-print("Building lookup tables...")
-downloads_map   = nodes.set_index("model_id")["downloads"].to_dict()
-creator_map     = nodes.set_index("model_id")["creator"].to_dict()
-edge_transforms = edges.groupby("Target")["Transformation"].apply(list).to_dict()
+def match_family(text):
+    if pd.isna(text):
+        return None
+    s = str(text).lower()
+    for fam, pats in FAMILY_PATTERNS:
+        for pat in pats:
+            if re.search(pat, s):
+                return fam
+    return None
 
-# ── Build multi-parent node table ─────────────────────────────────────────────
-print("Building multi-parent node table...")
-multi_rows = []
-for node, deg in in_deg.items():
-    if deg >= 2:
-        parents      = list(G.predecessors(node))
-        parent_fams  = [extract_family(p) for p in parents]
-        unique_fams  = list(set(parent_fams))
-        is_cross_fam = len(unique_fams) > 1
+def extract_base_model_from_tags(tags):
+    """
+    Pull the base_model field from tags if present.
+    Example:
+      base_model:Qwen/Qwen3.5-27B
+    """
+    if pd.isna(tags):
+        return None
+    s = str(tags)
+    m = re.search(r"base_model:([^,]+)", s)
+    if m:
+        return m.group(1).strip()
+    return None
 
-        downloads  = int(downloads_map.get(node, 0))
-        creator    = creator_map.get(node, "unknown")
-        transforms = pd.Series(edge_transforms.get(node, [])).value_counts().to_dict()
+def family_from_base_model_tag(tags):
+    base_model = extract_base_model_from_tags(tags)
+    return match_family(base_model)
 
-        multi_rows.append({
-            "model_id":          node,
-            "creator":           creator,
-            "in_degree":         deg,
-            "out_degree":        out_deg.get(node, 0),
-            "downloads":         downloads,
-            "parents":           "|".join(parents[:10]),
-            "parent_families":   "|".join(unique_fams),
-            "n_unique_families": len(unique_fams),
-            "is_cross_family":   is_cross_fam,
-            "transformations":   str(transforms),
-        })
+def family_from_model_name(model_name):
+    return match_family(model_name)
 
-multi_df = pd.DataFrame(multi_rows).sort_values("in_degree", ascending=False)
-multi_df.to_csv("rq2_multi_parent_nodes.csv", index=False)
-print(f"\nSaved rq2_multi_parent_nodes.csv ({len(multi_df):,} rows)")
+def family_from_creator(creator):
+    return match_family(creator)
 
-print(f"\nCross-family merges:  {multi_df['is_cross_family'].sum():,} ({multi_df['is_cross_family'].mean()*100:.1f}% of multi-parent)")
-print(f"Same-family merges:   {(~multi_df['is_cross_family']).sum():,}")
+def best_effort_family(row):
+    """
+    Priority:
+      1) base_model tag
+      2) model_name
+      3) creator
+    """
+    fam = family_from_base_model_tag(row.get("tags", ""))
+    if fam is not None:
+        return fam, "base_model_tag"
 
-# ── Parent pair co-occurrence ─────────────────────────────────────────────────
-print("\n=== MOST COMMON BASE MODEL PAIRS ===")
+    fam = family_from_model_name(row.get("model_name", ""))
+    if fam is not None:
+        return fam, "model_name"
+
+    fam = family_from_creator(row.get("creator", ""))
+    if fam is not None:
+        return fam, "creator"
+
+    return None, None
+
+# -------------------------------------------------------------------
+# Assign family labels using multiple methods
+# -------------------------------------------------------------------
+print("Assigning families using multiple methods...")
+
+nodes["family_tag"] = nodes["tags"].apply(family_from_base_model_tag)
+nodes["family_name"] = nodes["model_name"].apply(family_from_model_name)
+nodes["family_creator"] = nodes["creator"].apply(family_from_creator)
+
+best_family = []
+best_source = []
+for _, row in nodes.iterrows():
+    fam, src = best_effort_family(row)
+    best_family.append(fam)
+    best_source.append(src)
+
+nodes["family_best"] = best_family
+nodes["family_best_source"] = best_source
+
+# -------------------------------------------------------------------
+# Coverage by method
+# -------------------------------------------------------------------
+coverage_rows = []
+for col in ["family_tag", "family_name", "family_creator", "family_best"]:
+    coverage_rows.append({
+        "method": col,
+        "covered_nodes": int(nodes[col].notna().sum()),
+        "coverage_pct": round(nodes[col].notna().mean() * 100, 2)
+    })
+
+coverage_df = pd.DataFrame(coverage_rows)
+
+print("\n=== FAMILY COVERAGE ===")
+print(coverage_df.to_string(index=False))
+
+# Coverage on multi-parent nodes
+multi_coverage_rows = []
+multi_subset = nodes[nodes["model_id"].isin(multi_ids)].copy()
+
+for col in ["family_tag", "family_name", "family_creator", "family_best"]:
+    multi_coverage_rows.append({
+        "method": col,
+        "covered_multi_parent_nodes": int(multi_subset[col].notna().sum()),
+        "coverage_pct": round(multi_subset[col].notna().mean() * 100, 2)
+    })
+
+multi_coverage_df = pd.DataFrame(multi_coverage_rows)
+
+print("\n=== MULTI-PARENT COVERAGE ===")
+print(multi_coverage_df.to_string(index=False))
+
+# -------------------------------------------------------------------
+# Resolution status for each family method
+# -------------------------------------------------------------------
+def family_status_for_node(node_id, family_col):
+    parents = list(G.predecessors(node_id))
+    fams = []
+    for p in parents:
+        val = nodes.loc[nodes["model_id"] == p, family_col]
+        if len(val) > 0 and pd.notna(val.iloc[0]):
+            fams.append(val.iloc[0])
+
+    fams = sorted(set(fams))
+    if len(fams) == 0:
+        return "unresolved"
+    if len(fams) == 1:
+        return "same_family"
+    return "cross_family"
+
+resolution_rows = []
+for col in ["family_tag", "family_name", "family_creator", "family_best"]:
+    counts = Counter()
+    for node_id in multi_ids:
+        counts[family_status_for_node(node_id, col)] += 1
+
+    total = len(multi_ids)
+    same = counts["same_family"]
+    cross = counts["cross_family"]
+    unresolved = counts["unresolved"]
+
+    resolution_rows.append({
+        "method": col,
+        "multi_parent_nodes": total,
+        "same_family": same,
+        "cross_family": cross,
+        "unresolved": unresolved,
+        "same_family_pct_of_multi": round(same / total * 100, 2),
+        "cross_family_pct_of_multi": round(cross / total * 100, 2),
+        "unresolved_pct_of_multi": round(unresolved / total * 100, 2),
+        "same_family_pct_of_resolved": round(same / max(same + cross, 1) * 100, 2),
+        "cross_family_pct_of_resolved": round(cross / max(same + cross, 1) * 100, 2),
+    })
+
+resolution_df = pd.DataFrame(resolution_rows)
+
+print("\n=== SAME / CROSS / UNRESOLVED ===")
+print(resolution_df.to_string(index=False))
+
+# -------------------------------------------------------------------
+# Save unresolved multi-parent examples for manual inspection
+# -------------------------------------------------------------------
+unresolved_examples = []
+for node_id in multi_ids:
+    if family_status_for_node(node_id, "family_best") != "unresolved":
+        continue
+
+    parents = list(G.predecessors(node_id))
+    parent_rows = nodes[nodes["model_id"].isin(parents)][
+        ["model_id", "model_name", "creator", "tags", "family_tag", "family_name", "family_creator", "family_best"]
+    ].copy()
+
+    unresolved_examples.append({
+        "model_id": node_id,
+        "creator": nodes.loc[nodes["model_id"] == node_id, "creator"].iloc[0] if len(nodes.loc[nodes["model_id"] == node_id]) > 0 else "",
+        "downloads": int(nodes.loc[nodes["model_id"] == node_id, "downloads"].iloc[0]) if len(nodes.loc[nodes["model_id"] == node_id]) > 0 else 0,
+        "in_degree": int(in_deg.get(node_id, 0)),
+        "parent_count": len(parents),
+        "parents": "|".join(parents[:25]),
+        "parent_name_matches": int(parent_rows["family_name"].notna().sum()),
+        "parent_tag_matches": int(parent_rows["family_tag"].notna().sum()),
+        "parent_creator_matches": int(parent_rows["family_creator"].notna().sum()),
+        "parent_best_matches": int(parent_rows["family_best"].notna().sum()),
+    })
+
+unresolved_df = pd.DataFrame(unresolved_examples).sort_values(
+    ["in_degree", "downloads"], ascending=[False, False]
+)
+unresolved_df.to_csv("rq2_unresolved_multi_parent_examples.csv", index=False)
+
+# Also save unresolved nodes overall
+overall_unresolved = nodes[
+    nodes["family_best"].isna()
+][["model_id", "model_name", "creator", "tags", "downloads"]].copy()
+overall_unresolved.to_csv("rq2_unresolved_nodes.csv", index=False)
+
+# -------------------------------------------------------------------
+# Best-effort family pair counts
+# -------------------------------------------------------------------
+print("\n=== BEST-EFFORT FAMILY PAIRS ===")
 pair_counter = Counter()
-family_pair_counter = Counter()
 
-for _, row in multi_df.iterrows():
-    parents = [p for p in row["parents"].split("|") if p]
-    if len(parents) >= 2:
-        for pair in combinations(sorted(parents), 2):
+for node_id in multi_ids:
+    parents = list(G.predecessors(node_id))
+    fams = []
+    for p in parents:
+        val = nodes.loc[nodes["model_id"] == p, "family_best"]
+        if len(val) > 0 and pd.notna(val.iloc[0]):
+            fams.append(val.iloc[0])
+
+    unique_fams = sorted(set(fams))
+    if len(unique_fams) == 1:
+        pair_counter[(unique_fams[0], unique_fams[0])] += 1
+    elif len(unique_fams) >= 2:
+        for pair in combinations(unique_fams, 2):
             pair_counter[pair] += 1
 
-        fams = [extract_family(p) for p in parents]
-        for fpair in combinations(sorted(set(fams)), 2):
-            family_pair_counter[fpair] += 1
-
-top_pairs = pd.DataFrame([
-    {"parent_a": a, "parent_b": b, "co_occurrence_count": c,
-     "family_a": extract_family(a), "family_b": extract_family(b)}
+best_effort_pairs = pd.DataFrame([
+    {"family_a": a, "family_b": b, "count": c}
     for (a, b), c in pair_counter.most_common(50)
 ])
-if len(top_pairs) > 0:
-    top_pairs.to_csv("rq2_parent_pairs.csv", index=False)
-    print(top_pairs.head(15).to_string(index=False))
-    print(f"\nSaved rq2_parent_pairs.csv")
 
-# ── Family combination breakdown ─────────────────────────────────────────────
-print("\n=== FAMILY COMBINATIONS ===")
-fam_pairs = pd.DataFrame([
-    {"family_a": a, "family_b": b, "count": c}
-    for (a, b), c in family_pair_counter.most_common(30)
-])
-if len(fam_pairs) > 0:
-    fam_pairs.to_csv("rq2_family_combinations.csv", index=False)
-    print(fam_pairs.head(15).to_string(index=False))
-    print(f"\nSaved rq2_family_combinations.csv")
+best_effort_pairs.to_csv("rq2_best_effort_family_pairs.csv", index=False)
+print(best_effort_pairs.head(15).to_string(index=False))
 
-# ── Downloads comparison: multi vs single parent ──────────────────────────────
-print("\n=== DOWNLOADS: MULTI-PARENT vs SINGLE-PARENT ===")
-multi_ids  = set(multi_df["model_id"].tolist())
-single_ids = set(n for n, d in in_deg.items() if d == 1)
+# -------------------------------------------------------------------
+# Quick diagnostic of base_model tags
+# -------------------------------------------------------------------
+nodes["base_model_tag"] = nodes["tags"].apply(extract_base_model_from_tags)
 
-multi_nodes  = nodes[nodes["model_id"].isin(multi_ids)]
-single_nodes = nodes[nodes["model_id"].isin(single_ids)]
+print("\n=== BASE_MODEL TAG CHECK ===")
+print(f"Nodes with base_model tag: {nodes['base_model_tag'].notna().sum():,} / {len(nodes):,}")
+print(f"Multi-parent nodes with base_model tag: {multi_subset['base_model_tag'].notna().sum():,} / {len(multi_subset):,}")
 
-print(f"Multi-parent  avg downloads: {multi_nodes['downloads'].mean():.0f}")
-print(f"Multi-parent  med downloads: {multi_nodes['downloads'].median():.0f}")
-print(f"Single-parent avg downloads: {single_nodes['downloads'].mean():.0f}")
-print(f"Single-parent med downloads: {single_nodes['downloads'].median():.0f}")
+# -------------------------------------------------------------------
+# Save comparison tables
+# -------------------------------------------------------------------
+comparison_df = coverage_df.merge(multi_coverage_df, on="method", how="left")
+comparison_df.to_csv("rq2_family_method_comparison.csv", index=False)
+resolution_df.to_csv("rq2_resolution_by_method.csv", index=False)
 
-# ── Summary ───────────────────────────────────────────────────────────────────
 summary = f"""
-RQ2 SUMMARY STATISTICS
-=======================
-Total nodes in graph:              {total_nodes:,}
-Multi-parent nodes (in-deg >= 2):  {multi_2plus:,} ({multi_2plus/total_nodes*100:.2f}%)
-Multi-parent nodes (in-deg >= 3):  {multi_3plus:,}
-Multi-parent nodes (in-deg >= 5):  {multi_5plus:,}
-Multi-parent nodes (in-deg >= 10): {multi_10plus:,}
-Maximum in-degree:                 {max_in}
+RQ2 DIAGNOSTIC SUMMARY
+======================
 
-Cross-family merges: {multi_df['is_cross_family'].sum():,} ({multi_df['is_cross_family'].mean()*100:.1f}% of multi-parent nodes)
-Same-family merges:  {(~multi_df['is_cross_family']).sum():,}
+Graph:
+  Nodes: {G.number_of_nodes():,}
+  Edges: {G.number_of_edges():,}
+  Multi-parent nodes: {len(multi_ids):,}
 
-Downloads comparison:
-  Multi-parent  avg: {multi_nodes['downloads'].mean():.0f}   median: {multi_nodes['downloads'].median():.0f}
-  Single-parent avg: {single_nodes['downloads'].mean():.0f}   median: {single_nodes['downloads'].median():.0f}
+Coverage by method:
+{coverage_df.to_string(index=False)}
 
-Top 10 most-merged base model pairs:
-{top_pairs.head(10).to_string(index=False) if len(top_pairs) > 0 else 'N/A'}
+Multi-parent coverage by method:
+{multi_coverage_df.to_string(index=False)}
 
-Top family combinations:
-{fam_pairs.head(10).to_string(index=False) if len(fam_pairs) > 0 else 'N/A'}
+Same / cross / unresolved by method:
+{resolution_df.to_string(index=False)}
+
+Base model tag signal:
+  Nodes with base_model tag: {nodes['base_model_tag'].notna().sum():,} / {len(nodes):,}
+  Multi-parent nodes with base_model tag: {multi_subset['base_model_tag'].notna().sum():,} / {len(multi_subset):,}
+
+Interpretation guide:
+  - If family_tag performs much better than family_name and family_creator, the issue is mostly our classifier.
+  - If family_best still leaves many unresolved nodes, the data itself is genuinely heterogeneous.
+  - Inspect rq2_unresolved_multi_parent_examples.csv to see what kinds of models are still hard to classify.
 """
-with open("rq2_summary.txt", "w") as f:
+
+with open("rq2_diagnostic_summary.txt", "w", encoding="utf-8") as f:
     f.write(summary)
-print(summary)
-print("Saved rq2_summary.txt")
+
+print("\n" + summary)
+print("Saved:")
+print("  rq2_family_method_comparison.csv")
+print("  rq2_resolution_by_method.csv")
+print("  rq2_unresolved_nodes.csv")
+print("  rq2_unresolved_multi_parent_examples.csv")
+print("  rq2_best_effort_family_pairs.csv")
+print("  rq2_diagnostic_summary.txt")
