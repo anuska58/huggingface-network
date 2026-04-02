@@ -1,5 +1,5 @@
 """
-RQ3 - Lineage Depth and Derivation Statistics (Fixed for Supervisor)
+RQ3 - Lineage Depth and Derivation Statistics
 =====================================================================
 New Updates:
   - Original script ran BFS from only top 100 base models → global
